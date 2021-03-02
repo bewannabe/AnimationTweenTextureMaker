@@ -155,3 +155,43 @@ bool UPicItemWidget::ExportRenderTarget2DToPNG(UTextureRenderTarget2D* TexRT, co
 	return bSuccess;
 }
 
+bool UPicItemWidget::ExportRenderTexture2D(UTexture2D* Tex2D, const FString& FilePath, const FString& FileName)
+{
+	bool bSuccess = false;
+	FString TotalFileName = FPaths::Combine(*FilePath, *FileName);
+	FText PathError;
+	FPaths::ValidatePath(TotalFileName, &PathError);
+
+	if (!PathError.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PicItem: Path wrong ____ %s"), *(PathError.ToString()));
+	}
+	else if (FileName.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PicItem: filename empty"));
+	}
+	else
+	{
+		if (Tex2D)
+		{
+			bSuccess = true;
+
+			EPixelFormat Format = Tex2D->GetPixelFormat();
+			int32 ImageBytes = CalculateImageBytes(Tex2D->GetSizeX(), Tex2D->GetSizeY(), 0, Format);
+
+			uint8* MipData = static_cast<uint8*>(Tex2D->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+
+			IImageWrapperModule& ImageWrapperModule = FModuleManager::Get().LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+			TSharedPtr<IImageWrapper> PNGImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+			PNGImageWrapper->SetRaw(MipData, ImageBytes * sizeof(uint8), Tex2D->GetSizeX(), Tex2D->GetSizeY(), ERGBFormat::BGRA, 8);
+
+			const TArray64<uint8>& PNGData = PNGImageWrapper->GetCompressed(100);
+			FFileHelper::SaveArrayToFile(PNGData, *TotalFileName);
+
+			Tex2D->PlatformData->Mips[0].BulkData.Unlock();
+		}
+	}
+
+	return bSuccess;
+}
+

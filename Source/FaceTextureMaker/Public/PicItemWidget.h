@@ -28,4 +28,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "PicItem")
 		bool ExportRenderTarget2DToPNG(UTextureRenderTarget2D* TexRT, const FString& FilePath, const FString& FileName);
+
+	UFUNCTION(BlueprintCallable, Category = "PicItem")
+		bool ExportRenderTexture2D(UTexture2D* Tex2D, const FString& FilePath, const FString& FileName);
 };

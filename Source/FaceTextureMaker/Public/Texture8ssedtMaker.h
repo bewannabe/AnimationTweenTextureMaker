@@ -65,6 +65,10 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Texture8ssedtMaker")
 		UTexture2D* GetTexture();
 
+public:
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Texture8ssedtMaker")
+		float DistScale = 1.0;
+
 private:
 	FPoint Get(FGrid &g, int32 x, int32 y);
 	void Put(FGrid &g, int32 x, int32 y, const FPoint &p);

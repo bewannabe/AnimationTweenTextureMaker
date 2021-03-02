@@ -27,13 +27,13 @@ UTexture2D* UTexture8ssedtMaker::Generate8ssedtTexture(UTexture2D* source)
 			b = MipData[Index + 2];
 			a = MipData[Index + 3];
 
-			if ((int32)g > 128)
+			if ((int32)g < 128)
 			{
-				Put(grid1, x, y, FPoint());
-				Put(grid2, x, y, FPoint(9999,9999));
+				Put(grid1, x, y, FPoint(0, 0));
+				Put(grid2, x, y, FPoint(9999, 9999));
 			}
 			else {
-				Put(grid2, x, y, FPoint());
+				Put(grid2, x, y, FPoint(0, 0));
 				Put(grid1, x, y, FPoint(9999, 9999));
 			}
 		}
@@ -56,10 +56,9 @@ UTexture2D* UTexture8ssedtMaker::Generate8ssedtTexture(UTexture2D* source)
 			int32 dist = dist1 - dist2;
 
 			// Clamp and scale it, just for display purposes.
-			int32 c = dist * 3 + 128;
+			int32 c = dist * DistScale + 128;
 			if (c < 0) c = 0;
 			if (c > 255) c = 255;
-			c = 255 - c;
 
 			dest.Add((uint8)c);
 			dest.Add((uint8)c);

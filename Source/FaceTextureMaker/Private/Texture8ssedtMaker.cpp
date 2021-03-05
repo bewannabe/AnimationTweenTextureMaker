@@ -75,8 +75,6 @@ UTexture2D* UTexture8ssedtMaker::Generate8ssedtTexture(UTexture2D* source)
 		Texture8ssedt->PlatformData->Mips[0].BulkData.Unlock();
 		Texture8ssedt->UpdateResource();
 		Texture8ssedt->SRGB = false;
-		Texture8ssedt->CompressionSettings = TextureCompressionSettings::TC_HDR;
-		Texture8ssedt->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
 		Texture8ssedt->Filter = TextureFilter::TF_Nearest;
 	}
 

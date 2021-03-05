@@ -2,6 +2,7 @@
 
 #include "PicItemWidget.h"
 
+#include "Engine/TextureDefines.h"
 #include "IDesktopPlatform.h"
 #include "DesktopPlatformModule.h"
 #include "Paths.h"
@@ -174,9 +175,6 @@ void UPicItemWidget::ExportRenderTarget2D(UTextureRenderTarget2D* TexRT, const F
 
 		if (NewTex != nullptr)
 		{
-			NewTex->CompressionSettings = TextureCompressionSettings::TC_HDR;
-			NewTex->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
-
 			ExportAssetWithDialog(NewObj);
 		}
 	}

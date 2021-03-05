@@ -2,8 +2,10 @@
 
 #include "PicItemWidget.h"
 
+#include "Factories/Factory.h"
 #include "IDesktopPlatform.h"
 #include "DesktopPlatformModule.h"
+#include "AssetToolsModule.h"
 #include "Paths.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
@@ -17,6 +19,12 @@ void UPicItemWidget::OpenDialog(TArray<FString>& outFiles)
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
 
 	bool bOpened = false;
+
+	FText PathError;
+	FPaths::ValidatePath(PreOpenPath, &PathError);
+	if (!PathError.IsEmpty())
+		PreOpenPath = FPlatformProcess::UserDir();
+
 	if (DesktopPlatform != NULL)
 	{
 		const FString FileTypes = TEXT("Texture (*.png;*.bmp;*.jpg;*.jpeg)|*.png;*.bmp;*.jpg;*.jpeg");
@@ -24,7 +32,7 @@ void UPicItemWidget::OpenDialog(TArray<FString>& outFiles)
 		(
 			NULL,
 			TEXT("Switch Textures"),
-			FPlatformProcess::UserDir(),
+			PreOpenPath,
 			TEXT(""),
 			FileTypes,
 			EFileDialogFlags::Multiple,
@@ -36,13 +44,24 @@ void UPicItemWidget::OpenDialog(TArray<FString>& outFiles)
 	{
 		outFiles = TArray<FString>();
 	}
+	else
+	{
+		FString FileName, FileExt;
+		FPaths::Split(outFiles[0], PreOpenPath, FileName, FileExt);
+	}
 }
 
-void UPicItemWidget::SaveDialog(FString& path)
+void UPicItemWidget::SaveDialog(FString& path, const FString& FileName)
 {
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
 
 	bool bSave = false;
+	
+	FText PathError;
+	FPaths::ValidatePath(PreSavePath, &PathError);
+	if (!PathError.IsEmpty())
+		PreSavePath = FPlatformProcess::UserDir();
+
 	if (DesktopPlatform != NULL)
 	{
 		TArray<FString> SaveFilenames;
@@ -51,8 +70,8 @@ void UPicItemWidget::SaveDialog(FString& path)
 		(
 			NULL,
 			TEXT("Save"),
-			FPlatformProcess::UserDir(),//FPaths::ProjectDir(),
-			TEXT("Face"),
+			PreSavePath,//FPaths::ProjectDir(),
+			FileName,
 			FileTypes,
 			EFileDialogFlags::None,
 			SaveFilenames
@@ -61,6 +80,8 @@ void UPicItemWidget::SaveDialog(FString& path)
 		if (bSave)
 		{
 			path = SaveFilenames[0];
+			FString FileName, FileExt;
+			FPaths::Split(path, PreSavePath, FileName, FileExt);
 		}
 	}
 }
@@ -68,7 +89,34 @@ void UPicItemWidget::SaveDialog(FString& path)
 UTexture2D* UPicItemWidget::LoadTexture(FString path)
 {
 	//return FImageUtils::ImportFileAsTexture2D(path);
-	
+	/*
+	if (path.EndsWith(TEXT(".TGA")) || path.EndsWith(TEXT(".png")) || path.EndsWith(TEXT(".bmp")) || path.EndsWith(TEXT(".jpg")) || path.EndsWith(TEXT(".jpeg")))
+	{
+		FString OpenPath, FileName, FileExt;
+		FPaths::Split(path, OpenPath, FileName, FileExt);
+
+		UFactory* Factory = Cast<UFactory>(UTexture2D::StaticClass()->GetDefaultObject());
+		FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+
+		TArray<FString> Paths;
+		Paths.Add(path);
+		TArray<UObject*> ReturnObjects = AssetToolsModule.Get().ImportAssets(Paths, OpenPath, Factory);
+
+		UTexture2D* NewTex = nullptr;
+		if(ReturnObjects.Num() > 0)
+			NewTex = Cast<UTexture2D>(ReturnObjects[0]);
+
+		if (NewTex)
+		{
+			NewTex->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
+			NewTex->SRGB = false;
+
+			return NewTex;
+		}
+	}
+
+	return nullptr;
+	*/
 	TArray<uint8> RawFileData;
 	if (!FFileHelper::LoadFileToArray(RawFileData, *path))
 		return nullptr;
@@ -113,49 +161,30 @@ UTexture2D* UPicItemWidget::LoadTexture(FString path)
 	}
 	
 	return nullptr;
-	
 }
 
-bool UPicItemWidget::ExportRenderTarget2DToPNG(UTextureRenderTarget2D* TexRT, const FString& FilePath, const FString& FileName)
+void UPicItemWidget::ExportRenderTarget2D(UTextureRenderTarget2D* TexRT, const FString& FileName)
 {
-	bool bSuccess = false;
-	FString TotalFileName = FPaths::Combine(*FilePath, *FileName);
-	FText PathError;
-	FPaths::ValidatePath(TotalFileName, &PathError);
-
-	if (!PathError.IsEmpty())
+	if (TexRT)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("PicItem: Path wrong ____ %s"), *(PathError.ToString()));
-	}
-	else if (FileName.IsEmpty())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("PicItem: filename empty"));
-	}
-	else
-	{
-		EPixelFormat Format = TexRT->GetFormat();
-		int32 ImageBytes = CalculateImageBytes(TexRT->SizeX, TexRT->SizeY, 0, Format);
-		TArray64<uint8> RawData;
-		RawData.AddUninitialized(ImageBytes);
+		UObject* NewObj = nullptr;
+		NewObj = TexRT->ConstructTexture2D(this, FileName, TexRT->GetMaskedFlags() | RF_Public | RF_Standalone, CTF_Default | CTF_AllowMips, NULL);
+		UTexture2D* NewTex = Cast<UTexture2D>(NewObj);
 
-		FRenderTarget* RenderTarget = TexRT->GameThread_GetRenderTargetResource();
-		bSuccess = RenderTarget->ReadPixelsPtr((FColor*)RawData.GetData());
-
-		if (bSuccess)
+		if (NewTex != nullptr)
 		{
-			IImageWrapperModule& ImageWrapperModule = FModuleManager::Get().LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
-			TSharedPtr<IImageWrapper> PNGImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-			PNGImageWrapper->SetRaw(RawData.GetData(), RawData.GetAllocatedSize(), TexRT->SizeX, TexRT->SizeX, ERGBFormat::BGRA, 8);
+			NewTex->CompressionSettings = TextureCompressionSettings::TC_HDR;
+			NewTex->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
 
-			const TArray64<uint8>& PNGData = PNGImageWrapper->GetCompressed(100);
-			FFileHelper::SaveArrayToFile(PNGData, *TotalFileName);
+			TArray<UObject*> ObjectsToExport;
+			ObjectsToExport.Add(NewObj);
+			FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+			AssetToolsModule.Get().ExportAssetsWithDialog(ObjectsToExport, true);
 		}
 	}
-
-	return bSuccess;
 }
 
-bool UPicItemWidget::ExportRenderTexture2D(UTexture2D* Tex2D, const FString& FilePath, const FString& FileName)
+bool UPicItemWidget::ExportTexture2D(UTexture2D* Tex2D, const FString& FilePath, const FString& FileName)
 {
 	bool bSuccess = false;
 	FString TotalFileName = FPaths::Combine(*FilePath, *FileName);

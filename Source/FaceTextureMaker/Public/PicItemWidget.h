@@ -32,7 +32,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PicItem", meta = (DisplayName = "ExportTexture2D"))
 		bool ExportTexture2D(UTexture2D* Tex2D, const FString& FilePath, const FString& FileName);
 
+
+private:
+	bool ExportAssetWithDialog(UObject* ObjectToExport);
+
 private:
 	FString PreOpenPath = TEXT("");
 	FString PreSavePath = TEXT("");
+	FString PreExportPath = TEXT("");
 };

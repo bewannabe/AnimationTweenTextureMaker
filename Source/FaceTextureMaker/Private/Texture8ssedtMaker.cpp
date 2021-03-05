@@ -70,8 +70,8 @@ UTexture2D* UTexture8ssedtMaker::Generate8ssedtTexture(UTexture2D* source)
 	Texture8ssedt = UTexture2D::CreateTransient(WIDTH, HEIGHT, PF_B8G8R8A8);
 	if (Texture8ssedt)
 	{
-		uint8* MipData = static_cast<uint8*>(Texture8ssedt->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
-		FMemory::Memcpy(MipData, dest.GetData(), Texture8ssedt->PlatformData->Mips[0].BulkData.GetBulkDataSize());
+		uint8* curMipData = static_cast<uint8*>(Texture8ssedt->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+		FMemory::Memcpy(curMipData, dest.GetData(), Texture8ssedt->PlatformData->Mips[0].BulkData.GetBulkDataSize());
 		Texture8ssedt->PlatformData->Mips[0].BulkData.Unlock();
 		Texture8ssedt->UpdateResource();
 		Texture8ssedt->SRGB = false;

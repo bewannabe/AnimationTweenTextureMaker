@@ -2,10 +2,8 @@
 
 #include "PicItemWidget.h"
 
-#include "Factories/Factory.h"
 #include "IDesktopPlatform.h"
 #include "DesktopPlatformModule.h"
-#include "AssetToolsModule.h"
 #include "Paths.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
@@ -13,6 +11,9 @@
 #include "Engine/Texture2D.h"
 #include "ImageUtils.h"
 #include "RendererUtils.h"
+#include "Exporters/Exporter.h"
+#include "AssetExportTask.h"
+
 
 void UPicItemWidget::OpenDialog(TArray<FString>& outFiles)
 {
@@ -70,7 +71,7 @@ void UPicItemWidget::SaveDialog(FString& path, const FString& FileName)
 		(
 			NULL,
 			TEXT("Save"),
-			PreSavePath,//FPaths::ProjectDir(),
+			PreSavePath,
 			FileName,
 			FileTypes,
 			EFileDialogFlags::None,
@@ -80,8 +81,8 @@ void UPicItemWidget::SaveDialog(FString& path, const FString& FileName)
 		if (bSave)
 		{
 			path = SaveFilenames[0];
-			FString FileName, FileExt;
-			FPaths::Split(path, PreSavePath, FileName, FileExt);
+			FString curFileName, FileExt;
+			FPaths::Split(path, PreSavePath, curFileName, FileExt);
 		}
 	}
 }
@@ -176,10 +177,7 @@ void UPicItemWidget::ExportRenderTarget2D(UTextureRenderTarget2D* TexRT, const F
 			NewTex->CompressionSettings = TextureCompressionSettings::TC_HDR;
 			NewTex->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
 
-			TArray<UObject*> ObjectsToExport;
-			ObjectsToExport.Add(NewObj);
-			FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
-			AssetToolsModule.Get().ExportAssetsWithDialog(ObjectsToExport, true);
+			ExportAssetWithDialog(NewObj);
 		}
 	}
 }
@@ -222,5 +220,222 @@ bool UPicItemWidget::ExportTexture2D(UTexture2D* Tex2D, const FString& FilePath,
 	}
 
 	return bSuccess;
+}
+
+bool UPicItemWidget::ExportAssetWithDialog(UObject* ObjectToExport)
+{
+	FString LastExportPath = !PreExportPath.IsEmpty() ? PreExportPath : FPlatformProcess::UserDir();
+
+	TArray<UExporter*> Exporters;
+	auto TransientPackage = GetTransientPackage();
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		if (It->IsChildOf(UExporter::StaticClass()) && !It->HasAnyClassFlags(CLASS_Abstract))
+		{
+			UExporter* Exporter = NewObject<UExporter>(TransientPackage, *It);
+			Exporters.Add(Exporter);
+		}
+	}
+
+	TArray<FString> AllFileTypes;
+	TArray<FString> AllExtensions;
+	TArray<FString> PreferredExtensions;
+
+	for (int32 ExporterIndex = Exporters.Num() - 1; ExporterIndex >= 0; --ExporterIndex)
+	{
+		UExporter* Exporter = Exporters[ExporterIndex];
+		if (Exporter->SupportedClass)
+		{
+			const bool bObjectIsSupported = Exporter->SupportsObject(ObjectToExport);
+			if (bObjectIsSupported)
+			{
+				// Get a string representing of the exportable types.
+				check(Exporter->FormatExtension.Num() == Exporter->FormatDescription.Num());
+				check(Exporter->FormatExtension.IsValidIndex(Exporter->PreferredFormatIndex));
+				for (int32 FormatIndex = Exporter->FormatExtension.Num() - 1; FormatIndex >= 0; --FormatIndex)
+				{
+					const FString& FormatExtension = Exporter->FormatExtension[FormatIndex];
+					const FString& FormatDescription = Exporter->FormatDescription[FormatIndex];
+
+					if (FormatIndex == Exporter->PreferredFormatIndex)
+					{
+						PreferredExtensions.Add(FormatExtension);
+					}
+					AllFileTypes.Add(FString::Printf(TEXT("%s (*.%s)|*.%s"), *FormatDescription, *FormatExtension, *FormatExtension));
+					AllExtensions.Add(FString::Printf(TEXT("*.%s"), *FormatExtension));
+				}
+			}
+		}
+	}
+	
+	if (PreferredExtensions.Num() == 0)
+	{
+		return false;
+	}
+
+	
+	// If FBX is listed, make that the most preferred option
+	const FString PreferredExtension = TEXT("FBX");
+	int32 ExtIndex = PreferredExtensions.Find(PreferredExtension);
+	if (ExtIndex > 0)
+	{
+		PreferredExtensions.RemoveAt(ExtIndex);
+		PreferredExtensions.Insert(PreferredExtension, 0);
+	}
+	FString FirstExtension = PreferredExtensions[0];
+
+	// If FBX is listed, make that the first option here too, then compile them all into one string
+	check(AllFileTypes.Num() == AllExtensions.Num())
+		for (ExtIndex = 1; ExtIndex < AllFileTypes.Num(); ++ExtIndex)
+		{
+			const FString FileType = AllFileTypes[ExtIndex];
+			if (FileType.Contains(PreferredExtension))
+			{
+				AllFileTypes.RemoveAt(ExtIndex);
+				AllFileTypes.Insert(FileType, 0);
+
+				const FString Extension = AllExtensions[ExtIndex];
+				AllExtensions.RemoveAt(ExtIndex);
+				AllExtensions.Insert(Extension, 0);
+			}
+		}
+	FString FileTypes;
+	FString Extensions;
+	for (ExtIndex = 0; ExtIndex < AllFileTypes.Num(); ++ExtIndex)
+	{
+		if (FileTypes.Len())
+		{
+			FileTypes += TEXT("|");
+		}
+		FileTypes += AllFileTypes[ExtIndex];
+
+		if (Extensions.Len())
+		{
+			Extensions += TEXT(";");
+		}
+		Extensions += AllExtensions[ExtIndex];
+	}
+	FileTypes = FString::Printf(TEXT("%s|All Files (%s)|%s"), *FileTypes, *Extensions, *Extensions);
+
+	FString SaveFileName;
+
+	TArray<FString> SaveFilenames;
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	bool bSave = false;
+	if (DesktopPlatform)
+	{
+		bSave = DesktopPlatform->SaveFileDialog(
+			NULL,
+			FText::Format(NSLOCTEXT("UnrealEd", "Save_F", "Save: {0}"), FText::FromString(ObjectToExport->GetName())).ToString(),
+			*LastExportPath,
+			*ObjectToExport->GetName(),
+			*FileTypes,
+			EFileDialogFlags::None,
+			SaveFilenames
+		);
+	}
+
+	if (!bSave)
+	{
+		return false;
+	}
+	SaveFileName = FString(SaveFilenames[0]);
+	FString tempFileName, tempFileExt;
+	FPaths::Split(SaveFileName, PreExportPath, tempFileName, tempFileExt);
+
+	
+	// Copy off the selected path for future export operations.
+	LastExportPath = SaveFileName;
+
+	const FString ObjectExportPath(FPaths::GetPath(SaveFileName));
+	const bool bFileInSubdirectory = ObjectExportPath.Contains(TEXT("/"));
+	if (bFileInSubdirectory && (!IFileManager::Get().MakeDirectory(*ObjectExportPath, true)))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PicItem: Path wrong ____ %s"), *ObjectExportPath);
+	}
+	else if (IFileManager::Get().IsReadOnly(*SaveFileName))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PicItem: Couldn't write to file %s . Maybe file is read-only? "), *SaveFileName);
+	}
+	else
+	{
+		// We have a writeable file.  Now go through that list of exporters again and find the right exporter and use it.
+		TArray<UExporter*>	ValidExporters;
+
+		for (int32 ExporterIndex = 0; ExporterIndex < Exporters.Num(); ++ExporterIndex)
+		{
+			UExporter* Exporter = Exporters[ExporterIndex];
+			if (Exporter->SupportsObject(ObjectToExport))
+			{
+				check(Exporter->FormatExtension.Num() == Exporter->FormatDescription.Num());
+				for (int32 FormatIndex = 0; FormatIndex < Exporter->FormatExtension.Num(); ++FormatIndex)
+				{
+					const FString& FormatExtension = Exporter->FormatExtension[FormatIndex];
+					if (FCString::Stricmp(*FormatExtension, *FPaths::GetExtension(SaveFileName)) == 0 ||
+						FCString::Stricmp(*FormatExtension, TEXT("*")) == 0)
+					{
+						ValidExporters.Add(Exporter);
+						break;
+					}
+				}
+			}
+		}
+
+		// Handle the potential of multiple exporters being found
+		UExporter* ExporterToUse = NULL;
+		if (ValidExporters.Num() == 1)
+		{
+			ExporterToUse = ValidExporters[0];
+		}
+		else if (ValidExporters.Num() > 1)
+		{
+			// Set up the first one as default
+			ExporterToUse = ValidExporters[0];
+
+			// ...but search for a better match if available
+			for (int32 ExporterIdx = 0; ExporterIdx < ValidExporters.Num(); ExporterIdx++)
+			{
+				if (ValidExporters[ExporterIdx]->GetClass()->GetFName() == ObjectToExport->GetExporterName())
+				{
+					ExporterToUse = ValidExporters[ExporterIdx];
+					break;
+				}
+			}
+		}
+
+		// If an exporter was found, use it.
+		if (ExporterToUse)
+		{
+			ExporterToUse->SetBatchMode(false);
+			ExporterToUse->SetCancelBatch(false);
+			ExporterToUse->SetShowExportOption(true);
+			ExporterToUse->AddToRoot();
+
+			UAssetExportTask* ExportTask = NewObject<UAssetExportTask>();
+			ExportTask->Object = ObjectToExport;
+			ExportTask->Exporter = ExporterToUse;
+			ExportTask->Filename = SaveFileName;
+			ExportTask->bSelected = false;
+			ExportTask->bReplaceIdentical = true;
+			ExportTask->bPrompt = false;
+			ExportTask->bUseFileArchive = ObjectToExport->IsA(UPackage::StaticClass());
+			ExportTask->bWriteEmptyFiles = false;
+
+			UExporter::RunAssetExportTask(ExportTask);
+
+			if (ExporterToUse->GetBatchMode() && ExporterToUse->GetCancelBatch())
+			{
+				//Exit the export file loop when there is a cancel all
+				return false;
+			}
+
+			ExporterToUse->SetBatchMode(false);
+			ExporterToUse->SetCancelBatch(false);
+			ExporterToUse->SetShowExportOption(true);
+			ExporterToUse->RemoveFromRoot();
+		}
+	}
+	
+	return true;
 }
 

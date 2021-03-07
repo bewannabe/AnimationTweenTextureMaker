@@ -17,6 +17,13 @@
 #include "BufferArchive.h"
 
 
+UPicItemWidget::UPicItemWidget(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	PreOpenPath = TEXT("");
+	PreSavePath = TEXT("");
+}
+
 void UPicItemWidget::OpenDialog(TArray<FString>& outFiles)
 {
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
@@ -25,7 +32,7 @@ void UPicItemWidget::OpenDialog(TArray<FString>& outFiles)
 
 	FText PathError;
 	FPaths::ValidatePath(PreOpenPath, &PathError);
-	if (!PathError.IsEmpty())
+	if (!PathError.IsEmpty() || PreOpenPath == TEXT(""))
 		PreOpenPath = FPlatformProcess::UserDir();
 
 	if (DesktopPlatform != NULL)
@@ -62,7 +69,7 @@ void UPicItemWidget::SaveDialog(FString& path, const FString& FileName)
 	
 	FText PathError;
 	FPaths::ValidatePath(PreSavePath, &PathError);
-	if (!PathError.IsEmpty())
+	if (!PathError.IsEmpty() || PreSavePath == TEXT(""))
 		PreSavePath = FPlatformProcess::UserDir();
 
 	if (DesktopPlatform != NULL)

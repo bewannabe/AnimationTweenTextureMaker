@@ -53,6 +53,8 @@ class FACETEXTUREMAKER_API UPicItemWidget : public UUserWidget
 	GENERATED_BODY()
 	
 public:
+	UPicItemWidget(const FObjectInitializer& ObjectInitializer);
+
 	UFUNCTION(BlueprintCallable, Category = "Desktop")
 		void OpenDialog(TArray<FString>& outFiles);
 

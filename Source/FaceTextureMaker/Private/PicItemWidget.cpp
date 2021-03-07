@@ -14,6 +14,7 @@
 #include "RendererUtils.h"
 #include "Exporters/Exporter.h"
 #include "AssetExportTask.h"
+#include "BufferArchive.h"
 
 
 void UPicItemWidget::OpenDialog(TArray<FString>& outFiles)
@@ -67,7 +68,7 @@ void UPicItemWidget::SaveDialog(FString& path, const FString& FileName)
 	if (DesktopPlatform != NULL)
 	{
 		TArray<FString> SaveFilenames;
-		const FString FileTypes = TEXT("Texture (*.png)|*.png");
+		const FString FileTypes = TEXT("Texture (*.TGA)|*.TGA|Texture (*.png)|*.png|All Files (*.TGA;*.png)|*.TGA;*.png");
 		bSave = DesktopPlatform->SaveFileDialog
 		(
 			NULL,
@@ -165,275 +166,222 @@ UTexture2D* UPicItemWidget::LoadTexture(FString path)
 	return nullptr;
 }
 
-void UPicItemWidget::ExportRenderTarget2D(UTextureRenderTarget2D* TexRT, const FString& FileName)
+bool UPicItemWidget::ExportRenderTarget2D(UTextureRenderTarget2D* TexRT, const FString& FileName)
 {
 	if (TexRT)
 	{
 		UObject* NewObj = nullptr;
-		NewObj = TexRT->ConstructTexture2D(this, FileName, TexRT->GetMaskedFlags() | RF_Public | RF_Standalone, CTF_Default | CTF_AllowMips, NULL);
-		UTexture2D* NewTex = Cast<UTexture2D>(NewObj);
+		EObjectFlags InObjectFlags = TexRT->GetMaskedFlags() | RF_Public | RF_Standalone;
 
-		if (NewTex != nullptr)
-		{
-			ExportAssetWithDialog(NewObj);
-		}
+		UTexture2D* Result = NULL;
+		// Check render target size is valid and power of two.
+		const bool bIsValidSize = (TexRT->SizeX != 0 && !(TexRT->SizeX & (TexRT->SizeX - 1)) &&
+			TexRT->SizeY != 0 && !(TexRT->SizeY & (TexRT->SizeY - 1)));
+		// The r2t resource will be needed to read its surface contents
+
+		const EPixelFormat PixelFormat = TexRT->GetFormat();
+
+		FRenderTarget* RenderTarget = TexRT->GameThread_GetRenderTargetResource();
+		// exit if source is not compatible.
+		if (bIsValidSize == false || RenderTarget == NULL)
+			return false;
+
+		TArray<FColor> SurfData;
+		RenderTarget->ReadPixels(SurfData);
+
+		// create the 2d texture
+		Result = UTexture2D::CreateTransient(TexRT->SizeX, TexRT->SizeY, TexRT->GetFormat(), FName(*FileName));
+
+		if (Result == NULL)
+			return false;
+
+		uint8* MipData = static_cast<uint8*>(Result->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+		FMemory::Memcpy(MipData, SurfData.GetData(), Result->PlatformData->Mips[0].BulkData.GetBulkDataSize());
+		Result->PlatformData->Mips[0].BulkData.Unlock();
+		Result->UpdateResource();
+		Result->SRGB = TexRT->IsSRGB();
+		return ExportTexture2DWithDialog(Result);
 	}
+
+	return false;
 }
 
-bool UPicItemWidget::ExportTexture2D(UTexture2D* Tex2D, const FString& FilePath, const FString& FileName)
+bool UPicItemWidget::ExportTexture2D(UTexture2D* Tex2D)
 {
-	bool bSuccess = false;
-	FString TotalFileName = FPaths::Combine(*FilePath, *FileName);
+	return ExportTexture2DWithDialog(Tex2D);
+}
+
+bool UPicItemWidget::ExportTexture2DWithDialog(UTexture2D* ObjectToExport)
+{
+	FString Path;
+	SaveDialog(Path, ObjectToExport->GetName());
+
+	if (Path.EndsWith(".TGA"))
+		return ExportToTGA(ObjectToExport, Path);
+	else if (Path.EndsWith(".png"))
+		return ExportToPNG(ObjectToExport, Path);
+
+	return false;
+}
+
+bool UPicItemWidget::ExportToTGA(UTexture2D* ObjectToExport, const FString& FileName)
+{
 	FText PathError;
-	FPaths::ValidatePath(TotalFileName, &PathError);
+	FPaths::ValidatePath(FileName, &PathError);
 
 	if (!PathError.IsEmpty())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("PicItem: Path wrong ____ %s"), *(PathError.ToString()));
+		return false;
 	}
 	else if (FileName.IsEmpty())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("PicItem: filename empty"));
-	}
-	else
-	{
-		if (Tex2D)
-		{
-			bSuccess = true;
-
-			EPixelFormat Format = Tex2D->GetPixelFormat();
-			int32 ImageBytes = CalculateImageBytes(Tex2D->GetSizeX(), Tex2D->GetSizeY(), 0, Format);
-
-			uint8* MipData = static_cast<uint8*>(Tex2D->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
-
-			IImageWrapperModule& ImageWrapperModule = FModuleManager::Get().LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
-			TSharedPtr<IImageWrapper> PNGImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-			PNGImageWrapper->SetRaw(MipData, ImageBytes * sizeof(uint8), Tex2D->GetSizeX(), Tex2D->GetSizeY(), ERGBFormat::BGRA, 8);
-
-			const TArray64<uint8>& PNGData = PNGImageWrapper->GetCompressed(100);
-			FFileHelper::SaveArrayToFile(PNGData, *TotalFileName);
-
-			Tex2D->PlatformData->Mips[0].BulkData.Unlock();
-		}
+		return false;
 	}
 
-	return bSuccess;
-}
 
-bool UPicItemWidget::ExportAssetWithDialog(UObject* ObjectToExport)
-{
-	FString LastExportPath = !PreExportPath.IsEmpty() ? PreExportPath : FPlatformProcess::UserDir();
+	FBufferArchive Ar;
+	UTexture2D* Texture = ObjectToExport;
 
-	TArray<UExporter*> Exporters;
-	auto TransientPackage = GetTransientPackage();
-	for (TObjectIterator<UClass> It; It; ++It)
-	{
-		if (It->IsChildOf(UExporter::StaticClass()) && !It->HasAnyClassFlags(CLASS_Abstract))
-		{
-			UExporter* Exporter = NewObject<UExporter>(TransientPackage, *It);
-			Exporters.Add(Exporter);
-		}
-	}
-
-	TArray<FString> AllFileTypes;
-	TArray<FString> AllExtensions;
-	TArray<FString> PreferredExtensions;
-
-	for (int32 ExporterIndex = Exporters.Num() - 1; ExporterIndex >= 0; --ExporterIndex)
-	{
-		UExporter* Exporter = Exporters[ExporterIndex];
-		if (Exporter->SupportedClass)
-		{
-			const bool bObjectIsSupported = Exporter->SupportsObject(ObjectToExport);
-			if (bObjectIsSupported)
-			{
-				// Get a string representing of the exportable types.
-				check(Exporter->FormatExtension.Num() == Exporter->FormatDescription.Num());
-				check(Exporter->FormatExtension.IsValidIndex(Exporter->PreferredFormatIndex));
-				for (int32 FormatIndex = Exporter->FormatExtension.Num() - 1; FormatIndex >= 0; --FormatIndex)
-				{
-					const FString& FormatExtension = Exporter->FormatExtension[FormatIndex];
-					const FString& FormatDescription = Exporter->FormatDescription[FormatIndex];
-
-					if (FormatIndex == Exporter->PreferredFormatIndex)
-					{
-						PreferredExtensions.Add(FormatExtension);
-					}
-					AllFileTypes.Add(FString::Printf(TEXT("%s (*.%s)|*.%s"), *FormatDescription, *FormatExtension, *FormatExtension));
-					AllExtensions.Add(FString::Printf(TEXT("*.%s"), *FormatExtension));
-				}
-			}
-		}
-	}
-	
-	if (PreferredExtensions.Num() == 0)
+	if (Texture == nullptr || (Texture->GetPixelFormat() != TSF_BGRA8 && Texture->GetPixelFormat() != TSF_RGBA16))
 	{
 		return false;
 	}
 
-	
-	// If FBX is listed, make that the most preferred option
-	const FString PreferredExtension = TEXT("FBX");
-	int32 ExtIndex = PreferredExtensions.Find(PreferredExtension);
-	if (ExtIndex > 0)
-	{
-		PreferredExtensions.RemoveAt(ExtIndex);
-		PreferredExtensions.Insert(PreferredExtension, 0);
-	}
-	FString FirstExtension = PreferredExtensions[0];
+	const bool bIsRGBA16 = Texture->GetPixelFormat() == TSF_RGBA16;
 
-	// If FBX is listed, make that the first option here too, then compile them all into one string
-	check(AllFileTypes.Num() == AllExtensions.Num())
-		for (ExtIndex = 1; ExtIndex < AllFileTypes.Num(); ++ExtIndex)
+	const int32 BytesPerPixel = bIsRGBA16 ? 8 : 4;
+
+	int32 SizeX = Texture->GetSizeX();
+	int32 SizeY = Texture->GetSizeY();
+	uint8* RawData = static_cast<uint8*>(Texture->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+
+	// If we should export the file with no alpha info.  
+	// If the texture is compressed with no alpha we should definitely not export an alpha channel
+	bool bExportWithAlpha = true;
+	if (bExportWithAlpha)
+	{
+		// If the texture isn't compressed with no alpha scan the texture to see if the alpha values are all 255 which means we can skip exporting it.
+		// This is a relatively slow process but we are just exporting textures 
+		bExportWithAlpha = false;
+		const int32 AlphaOffset = bIsRGBA16 ? 7 : 3;
+		for (int32 Y = SizeY - 1; Y >= 0; --Y)
 		{
-			const FString FileType = AllFileTypes[ExtIndex];
-			if (FileType.Contains(PreferredExtension))
+			uint8* Color = &RawData[Y * SizeX * BytesPerPixel];
+			for (int32 X = SizeX; X > 0; --X)
 			{
-				AllFileTypes.RemoveAt(ExtIndex);
-				AllFileTypes.Insert(FileType, 0);
-
-				const FString Extension = AllExtensions[ExtIndex];
-				AllExtensions.RemoveAt(ExtIndex);
-				AllExtensions.Insert(Extension, 0);
-			}
-		}
-	FString FileTypes;
-	FString Extensions;
-	for (ExtIndex = 0; ExtIndex < AllFileTypes.Num(); ++ExtIndex)
-	{
-		if (FileTypes.Len())
-		{
-			FileTypes += TEXT("|");
-		}
-		FileTypes += AllFileTypes[ExtIndex];
-
-		if (Extensions.Len())
-		{
-			Extensions += TEXT(";");
-		}
-		Extensions += AllExtensions[ExtIndex];
-	}
-	FileTypes = FString::Printf(TEXT("%s|All Files (%s)|%s"), *FileTypes, *Extensions, *Extensions);
-
-	FString SaveFileName;
-
-	TArray<FString> SaveFilenames;
-	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
-	bool bSave = false;
-	if (DesktopPlatform)
-	{
-		bSave = DesktopPlatform->SaveFileDialog(
-			NULL,
-			FText::Format(NSLOCTEXT("UnrealEd", "Save_F", "Save: {0}"), FText::FromString(ObjectToExport->GetName())).ToString(),
-			*LastExportPath,
-			*ObjectToExport->GetName(),
-			*FileTypes,
-			EFileDialogFlags::None,
-			SaveFilenames
-		);
-	}
-
-	if (!bSave)
-	{
-		return false;
-	}
-	SaveFileName = FString(SaveFilenames[0]);
-	FString tempFileName, tempFileExt;
-	FPaths::Split(SaveFileName, PreExportPath, tempFileName, tempFileExt);
-
-	
-	// Copy off the selected path for future export operations.
-	LastExportPath = SaveFileName;
-
-	const FString ObjectExportPath(FPaths::GetPath(SaveFileName));
-	const bool bFileInSubdirectory = ObjectExportPath.Contains(TEXT("/"));
-	if (bFileInSubdirectory && (!IFileManager::Get().MakeDirectory(*ObjectExportPath, true)))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("PicItem: Path wrong ____ %s"), *ObjectExportPath);
-	}
-	else if (IFileManager::Get().IsReadOnly(*SaveFileName))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("PicItem: Couldn't write to file %s . Maybe file is read-only? "), *SaveFileName);
-	}
-	else
-	{
-		// We have a writeable file.  Now go through that list of exporters again and find the right exporter and use it.
-		TArray<UExporter*>	ValidExporters;
-
-		for (int32 ExporterIndex = 0; ExporterIndex < Exporters.Num(); ++ExporterIndex)
-		{
-			UExporter* Exporter = Exporters[ExporterIndex];
-			if (Exporter->SupportsObject(ObjectToExport))
-			{
-				check(Exporter->FormatExtension.Num() == Exporter->FormatDescription.Num());
-				for (int32 FormatIndex = 0; FormatIndex < Exporter->FormatExtension.Num(); ++FormatIndex)
+				// Skip color info
+				Color += AlphaOffset;
+				// Get Alpha value then increment the pointer past it for the next pixel
+				uint8 Alpha = *Color++;
+				if (Alpha != 255)
 				{
-					const FString& FormatExtension = Exporter->FormatExtension[FormatIndex];
-					if (FCString::Stricmp(*FormatExtension, *FPaths::GetExtension(SaveFileName)) == 0 ||
-						FCString::Stricmp(*FormatExtension, TEXT("*")) == 0)
-					{
-						ValidExporters.Add(Exporter);
-						break;
-					}
-				}
-			}
-		}
-
-		// Handle the potential of multiple exporters being found
-		UExporter* ExporterToUse = NULL;
-		if (ValidExporters.Num() == 1)
-		{
-			ExporterToUse = ValidExporters[0];
-		}
-		else if (ValidExporters.Num() > 1)
-		{
-			// Set up the first one as default
-			ExporterToUse = ValidExporters[0];
-
-			// ...but search for a better match if available
-			for (int32 ExporterIdx = 0; ExporterIdx < ValidExporters.Num(); ExporterIdx++)
-			{
-				if (ValidExporters[ExporterIdx]->GetClass()->GetFName() == ObjectToExport->GetExporterName())
-				{
-					ExporterToUse = ValidExporters[ExporterIdx];
+					// When a texture is imported with no alpha, the alpha bits are set to 255
+					// So if the texture has non 255 alpha values, the texture is a valid alpha channel
+					bExportWithAlpha = true;
 					break;
 				}
 			}
-		}
-
-		// If an exporter was found, use it.
-		if (ExporterToUse)
-		{
-			ExporterToUse->SetBatchMode(false);
-			ExporterToUse->SetCancelBatch(false);
-			ExporterToUse->SetShowExportOption(true);
-			ExporterToUse->AddToRoot();
-
-			UAssetExportTask* ExportTask = NewObject<UAssetExportTask>();
-			ExportTask->Object = ObjectToExport;
-			ExportTask->Exporter = ExporterToUse;
-			ExportTask->Filename = SaveFileName;
-			ExportTask->bSelected = false;
-			ExportTask->bReplaceIdentical = true;
-			ExportTask->bPrompt = false;
-			ExportTask->bUseFileArchive = ObjectToExport->IsA(UPackage::StaticClass());
-			ExportTask->bWriteEmptyFiles = false;
-
-			UExporter::RunAssetExportTask(ExportTask);
-
-			if (ExporterToUse->GetBatchMode() && ExporterToUse->GetCancelBatch())
+			if (bExportWithAlpha)
 			{
-				//Exit the export file loop when there is a cancel all
-				return false;
+				break;
 			}
-
-			ExporterToUse->SetBatchMode(false);
-			ExporterToUse->SetCancelBatch(false);
-			ExporterToUse->SetShowExportOption(true);
-			ExporterToUse->RemoveFromRoot();
 		}
 	}
-	
-	return true;
+
+	const int32 OriginalWidth = SizeX;
+	const int32 OriginalHeight = SizeY;
+
+	FTGAFileHeader TGA;
+	FMemory::Memzero(&TGA, sizeof(TGA));
+	TGA.ImageTypeCode = 2;
+	TGA.BitsPerPixel = bExportWithAlpha ? 32 : 24;
+	TGA.Height = OriginalHeight;
+	TGA.Width = OriginalWidth;
+	Ar.Serialize(&TGA, sizeof(TGA));
+
+	if (bExportWithAlpha && !bIsRGBA16)
+	{
+		for (int32 Y = 0; Y < OriginalHeight; Y++)
+		{
+			// If we aren't skipping alpha channels we can serialize each line
+			Ar.Serialize(&RawData[(OriginalHeight - Y - 1) * OriginalWidth * 4], OriginalWidth * 4);
+		}
+	}
+	else
+	{
+		// Serialize each pixel
+		for (int32 Y = OriginalHeight - 1; Y >= 0; --Y)
+		{
+			uint8* Color = &RawData[Y * OriginalWidth * BytesPerPixel];
+			for (int32 X = OriginalWidth; X > 0; --X)
+			{
+				if (bIsRGBA16)
+				{
+					Ar << Color[1];
+					Ar << Color[3];
+					Ar << Color[5];
+					if (bExportWithAlpha)
+					{
+						Ar << Color[7];
+					}
+					Color += 8;
+				}
+				else
+				{
+					Ar << *Color++;
+					Ar << *Color++;
+					Ar << *Color++;
+					// Skip alpha channel since we are exporting with no alpha
+					Color++;
+				}
+			}
+		}
+	}
+
+	Texture->PlatformData->Mips[0].BulkData.Unlock();
+
+	FTGAFileFooter Ftr;
+	FMemory::Memzero(&Ftr, sizeof(Ftr));
+	FMemory::Memcpy(Ftr.Signature, "TRUEVISION-XFILE", 16);
+	Ftr.TrailingPeriod = '.';
+	Ar.Serialize(&Ftr, sizeof(Ftr));
+
+	return FFileHelper::SaveArrayToFile(Ar, *FileName);
+}
+
+bool UPicItemWidget::ExportToPNG(UTexture2D* ObjectToExport, const FString& FileName)
+{
+	FText PathError;
+	FPaths::ValidatePath(FileName, &PathError);
+
+	if (!PathError.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PicItem: Path wrong ____ %s"), *(PathError.ToString()));
+		return false;
+	}
+	else if (FileName.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PicItem: filename empty"));
+		return false;
+	}
+
+	if (ObjectToExport == nullptr)
+		return false;
+
+	EPixelFormat Format = ObjectToExport->GetPixelFormat();
+	int32 ImageBytes = CalculateImageBytes(ObjectToExport->GetSizeX(), ObjectToExport->GetSizeY(), 0, Format);
+
+	uint8* MipData = static_cast<uint8*>(ObjectToExport->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::Get().LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+	TSharedPtr<IImageWrapper> PNGImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+	PNGImageWrapper->SetRaw(MipData, ImageBytes * sizeof(uint8), ObjectToExport->GetSizeX(), ObjectToExport->GetSizeY(), ERGBFormat::BGRA, 8);
+
+	ObjectToExport->PlatformData->Mips[0].BulkData.Unlock();
+
+	const TArray64<uint8>& PNGData = PNGImageWrapper->GetCompressed(100);
+	return FFileHelper::SaveArrayToFile(PNGData, *FileName);
 }
 
